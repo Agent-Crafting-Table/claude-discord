@@ -64,6 +64,12 @@ if (!TOKEN) {
 }
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 
+const MODEL_MAP: Record<string, string> = {
+  sonnet: 'claude-sonnet-4-6',
+  opus:   'claude-opus-4-7',
+  haiku:  'claude-haiku-4-5-20251001',
+}
+
 function readPersonaName(): string {
   try {
     const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
@@ -778,6 +784,26 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       } catch (err) {
         await interaction.editReply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
       }
+    } else if (interaction.commandName === 'model') {
+      await interaction.deferReply().catch(() => {})
+      const session = readPersonaName()
+      if (!session) {
+        await interaction.editReply('❌ Could not determine session name — check persona.md.').catch(() => {})
+        return
+      }
+      const arg = (interaction.options.getString('model') ?? '').toLowerCase()
+      const modelId = MODEL_MAP[arg]
+      if (!modelId) {
+        const valid = Object.keys(MODEL_MAP).join(', ')
+        await interaction.editReply(`❌ Unknown model \`${arg || '(none)'}\`. Valid: ${valid}`).catch(() => {})
+        return
+      }
+      try {
+        execSync(`tmux send-keys -t "${session}" '/model ${modelId}' Enter`, { timeout: 5000 })
+        await interaction.editReply(`✓ Switching to \`${modelId}\`...`).catch(() => {})
+      } catch (err) {
+        await interaction.editReply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
+      }
     }
     return
   }
@@ -938,14 +964,33 @@ async function handleInbound(msg: Message): Promise<void> {
 client.once('ready', async c => {
   process.stderr.write(`artifice-discord: gateway connected as ${c.user.tag}\n`)
   const guildId = process.env.DISCORD_GUILD_ID
+  const modelOption = {
+    type: 3, // STRING
+    name: 'model',
+    description: 'Model name: sonnet, opus, haiku',
+    required: true,
+    choices: [
+      { name: 'Sonnet (claude-sonnet-4-6)', value: 'sonnet' },
+      { name: 'Opus (claude-opus-4-7)', value: 'opus' },
+      { name: 'Haiku (claude-haiku-4-5)', value: 'haiku' },
+    ],
+  }
+  const commands = [
+    { name: 'compact', description: 'Compact context' },
+    { name: 'model', description: 'Switch model', options: [modelOption] },
+  ]
   try {
     if (guildId) {
       const guild = c.guilds.cache.get(guildId) ?? await c.guilds.fetch(guildId)
-      await guild.commands.create({ name: 'compact', description: 'Compact context' })
-      process.stderr.write(`artifice-discord: /compact registered (guild ${guildId})\n`)
+      for (const cmd of commands) {
+        await guild.commands.create(cmd)
+        process.stderr.write(`artifice-discord: /${cmd.name} registered (guild ${guildId})\n`)
+      }
     } else {
-      await c.application.commands.create({ name: 'compact', description: 'Compact context' })
-      process.stderr.write(`artifice-discord: /compact registered (global — up to 1h propagation)\n`)
+      for (const cmd of commands) {
+        await c.application.commands.create(cmd)
+        process.stderr.write(`artifice-discord: /${cmd.name} registered (global — up to 1h propagation)\n`)
+      }
     }
   } catch (err) {
     process.stderr.write(`artifice-discord: slash command registration failed: ${err}\n`)
