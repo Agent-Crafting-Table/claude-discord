@@ -173,7 +173,10 @@ export class VoiceManager {
       })
       state.stream = stream
       stream.on('data', (chunk: Buffer) => {
-        if (state.speaking) state.chunks.push(Buffer.from(chunk))
+        if (state.speaking) {
+          this.resetInactivityTimer(state)
+          state.chunks.push(Buffer.from(chunk))
+        }
       })
       stream.on('error', err => {
         process.stderr.write(`artifice-discord: voice receive stream failed: ${err instanceof Error ? err.message : String(err)}\n`)
@@ -259,10 +262,13 @@ export class VoiceManager {
   private resetInactivityTimer(state: VoiceState): void {
     if (state.inactivityTimer) clearTimeout(state.inactivityTimer)
     state.inactivityTimer = setTimeout(() => {
-      if (this.states.get(state.guildId) === state) {
-        process.stderr.write(`artifice-discord: auto-leaving voice after ${INACTIVITY_LEAVE_MS / 60000} minutes idle\n`)
-        this.leave(state.guildId)
+      if (this.states.get(state.guildId) !== state) return
+      if (state.speaking) {
+        this.resetInactivityTimer(state)
+        return
       }
+      process.stderr.write(`artifice-discord: auto-leaving voice after ${INACTIVITY_LEAVE_MS / 60000} minutes idle\n`)
+      this.leave(state.guildId)
     }, INACTIVITY_LEAVE_MS)
     state.inactivityTimer.unref?.()
   }

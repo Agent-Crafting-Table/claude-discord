@@ -9,7 +9,7 @@ When the bot receives a message, the MCP server forwards it to Claude and provid
 ## Prerequisites
 
 - [Bun](https://bun.sh) — the MCP server runs on Bun. Install with `curl -fsSL https://bun.sh/install | bash`.
-- Voice mode requires Google Speech-to-Text and Text-to-Speech auth via either `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json` or `GOOGLE_API_KEY=...`.
+- Voice mode requires Google Speech-to-Text and Text-to-Speech auth via Google Application Default Credentials (for example `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json`). `GOOGLE_API_KEY` is an experimental, untested fallback.
 
 ## Quick Setup
 > Default pairing flow for a single-user DM bot. See [ACCESS.md](./ACCESS.md) for groups and multi-user setups.
@@ -110,10 +110,11 @@ Voice mode lets Fernando hold PTT in Discord, speak to the bot, and hear the ass
 Configuration:
 
 ```sh
-# choose one
+# Supported: Google Application Default Credentials, commonly a service-account key.
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-export GOOGLE_API_KEY=...
 ```
+
+Other ADC sources supported by Google's client libraries (for example workload identity, gcloud ADC, or metadata service credentials) may also work. `GOOGLE_API_KEY` remains as a best-effort experimental fallback, but it is untested for Cloud Speech/Text-to-Speech and is not the recommended setup.
 
 Usage:
 

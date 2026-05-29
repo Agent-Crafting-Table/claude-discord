@@ -28,6 +28,7 @@ import {
   type Message,
   type Attachment,
   type Interaction,
+  type ChatInputCommandInteraction,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
 import { execSync } from 'child_process'
@@ -251,6 +252,24 @@ function noteSent(id: string): void {
   }
 }
 
+function groupAllowsSender(policy: GroupPolicy | undefined, senderId: string): policy is GroupPolicy {
+  if (!policy) return false
+  const groupAllowFrom = policy.allowFrom ?? []
+  return groupAllowFrom.length === 0 || groupAllowFrom.includes(senderId)
+}
+
+async function interactionAllowedInGroupChannel(
+  interaction: ChatInputCommandInteraction,
+  access: Access,
+  senderId: string,
+): Promise<boolean> {
+  if (!interaction.inGuild()) return false
+  const ch = interaction.channel ?? await client.channels.fetch(interaction.channelId).catch(() => null)
+  if (!ch || ch.type === ChannelType.DM) return false
+  const channelId = ch.isThread() ? ch.parentId ?? interaction.channelId : interaction.channelId
+  return groupAllowsSender(access.groups[channelId], senderId)
+}
+
 async function gate(msg: Message): Promise<GateResult> {
   const access = loadAccess()
   const pruned = pruneExpired(access)
@@ -299,12 +318,8 @@ async function gate(msg: Message): Promise<GateResult> {
     ? msg.channel.parentId ?? msg.channelId
     : msg.channelId
   const policy = access.groups[channelId]
-  if (!policy) return { action: 'drop' }
-  const groupAllowFrom = policy.allowFrom ?? []
+  if (!groupAllowsSender(policy, senderId)) return { action: 'drop' }
   const requireMention = policy.requireMention ?? true
-  if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
-    return { action: 'drop' }
-  }
   if (requireMention && !(await isMentioned(msg, access.mentionPatterns))) {
     return { action: 'drop' }
   }
@@ -806,6 +821,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         if (subcommand === 'leave') {
           await interaction.editReply(voiceManager.leave(interaction.guildId ?? undefined)).catch(() => {})
         } else {
+          if (!(await interactionAllowedInGroupChannel(interaction, access, uid))) {
+            await interaction.editReply('❌ Voice failed: this channel is not allowlisted for voice.').catch(() => {})
+            return
+          }
           const msg = await voiceManager.joinFromInteraction(interaction)
           await interaction.editReply(`✓ ${msg}`).catch(() => {})
         }

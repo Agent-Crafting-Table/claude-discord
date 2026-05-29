@@ -16,10 +16,6 @@ import { Readable } from 'stream'
 const DEFAULT_VOICE = 'en-US-Neural2-D'
 let ttsClient: TextToSpeechClient | null = null
 
-function haveGoogleAuth(): boolean {
-  return Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_API_KEY)
-}
-
 function getTtsClient(): TextToSpeechClient {
   if (!ttsClient) ttsClient = new TextToSpeechClient()
   return ttsClient
@@ -36,6 +32,7 @@ export function readTtsVoice(): string {
   }
 }
 
+// Best-effort experimental fallback for GOOGLE_API_KEY; ADC/service-account auth is the supported path.
 async function synthesizeWithApiKey(text: string, voiceName: string, apiKey: string): Promise<Buffer> {
   const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST',
@@ -58,8 +55,6 @@ async function synthesizeWithApiKey(text: string, voiceName: string, apiKey: str
 }
 
 export async function synthesize(text: string, voiceName = readTtsVoice()): Promise<Buffer> {
-  if (!haveGoogleAuth()) throw new Error('GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_API_KEY required')
-
   if (process.env.GOOGLE_API_KEY) {
     return synthesizeWithApiKey(text, voiceName, process.env.GOOGLE_API_KEY)
   }

@@ -4,10 +4,6 @@ import { Readable } from 'stream'
 
 let speechClient: SpeechClient | null = null
 
-function haveGoogleAuth(): boolean {
-  return Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_API_KEY)
-}
-
 function getSpeechClient(): SpeechClient {
   if (!speechClient) speechClient = new SpeechClient()
   return speechClient
@@ -43,6 +39,7 @@ async function decodeOpusToPcm(opusBuffer: Buffer): Promise<Buffer> {
   })
 }
 
+// Best-effort experimental fallback for GOOGLE_API_KEY; ADC/service-account auth is the supported path.
 async function transcribeWithApiKey(pcm: Buffer, apiKey: string): Promise<string> {
   const res = await fetch(`https://speech.googleapis.com/v1/speech:recognize?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST',
@@ -94,11 +91,6 @@ async function transcribeWithCredentials(pcm: Buffer): Promise<string> {
 }
 
 export async function transcribe(opusBuffer: Buffer): Promise<string> {
-  if (!haveGoogleAuth()) {
-    process.stderr.write('artifice-discord: voice STT skipped; GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_API_KEY required\n')
-    return ''
-  }
-
   try {
     const pcm = await decodeOpusToPcm(opusBuffer)
     if (pcm.length === 0) return ''
