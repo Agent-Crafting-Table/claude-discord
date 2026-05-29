@@ -12,6 +12,18 @@ import { speak } from './tts'
 const DEFAULT_FERNANDO_USER_ID = '301045022361518081'
 const MIN_UTTERANCE_MS = 300
 const INACTIVITY_LEAVE_MS = 10 * 60 * 1000
+const VOICE_OPCODE_SPEAKING = 5
+
+type PacketEmitter = {
+  on: (event: 'packet', listener: (packet: { op?: number; d?: { user_id?: string; speaking?: number } }) => void) => void
+  off: (event: 'packet', listener: (packet: { op?: number; d?: { user_id?: string; speaking?: number } }) => void) => void
+}
+
+type StateChangeEmitter = {
+  state?: unknown
+  on: (event: 'stateChange', listener: (oldState: unknown, newState: unknown) => void) => void
+  off: (event: 'stateChange', listener: (oldState: unknown, newState: unknown) => void) => void
+}
 
 type VoiceState = {
   guildId: string
@@ -22,6 +34,7 @@ type VoiceState = {
   utteranceStartedAt: number
   chunks: Buffer[]
   stream?: NodeJS.ReadableStream & { destroy?: () => void }
+  voiceGatewayCleanup?: () => void
   inactivityTimer?: ReturnType<typeof setTimeout>
 }
 
@@ -95,6 +108,7 @@ export class VoiceManager {
     this.states.set(guildId, state)
     this.resetInactivityTimer(state)
     this.wireReceiver(state)
+    this.wireVoiceGatewaySpeaking(state)
 
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
@@ -115,6 +129,7 @@ export class VoiceManager {
     if (!state) return 'Not connected to voice.'
 
     if (state.inactivityTimer) clearTimeout(state.inactivityTimer)
+    try { state.voiceGatewayCleanup?.() } catch {}
     try { state.stream?.destroy?.() } catch {}
     try { state.connection.destroy() } catch {}
     this.states.delete(targetGuildId)
@@ -142,6 +157,12 @@ export class VoiceManager {
     receiver.speaking.on('start', userId => {
       if (userId !== this.targetUserId || this.states.get(state.guildId) !== state) return
       this.resetInactivityTimer(state)
+
+      // receiver.speaking is packet-inactivity based. Use it only to start
+      // packet buffering; the utterance is flushed by the voice gateway
+      // Speaking opcode when Discord reports the user's bitfield dropped to 0.
+      if (state.speaking && state.stream) return
+
       state.speaking = true
       state.utteranceStartedAt = Date.now()
       state.chunks = []
@@ -158,11 +179,52 @@ export class VoiceManager {
         process.stderr.write(`artifice-discord: voice receive stream failed: ${err instanceof Error ? err.message : String(err)}\n`)
       })
     })
+  }
 
-    receiver.speaking.on('end', userId => {
-      if (userId !== this.targetUserId || this.states.get(state.guildId) !== state) return
-      void this.flushUtterance(state)
-    })
+  private wireVoiceGatewaySpeaking(state: VoiceState): void {
+    const boundNetworkings = new WeakSet<object>()
+    const boundWebSockets = new WeakSet<object>()
+    const cleanup: Array<() => void> = []
+
+    const onPacket = (packet: { op?: number; d?: { user_id?: string; speaking?: number } }) => {
+      if (this.states.get(state.guildId) !== state) return
+      if (packet.op !== VOICE_OPCODE_SPEAKING) return
+      if (packet.d?.user_id !== this.targetUserId) return
+
+      this.resetInactivityTimer(state)
+      if (packet.d.speaking === 0) void this.flushUtterance(state)
+    }
+
+    const bindWs = (networkingState: unknown) => {
+      const ws = (networkingState as { ws?: PacketEmitter } | undefined)?.ws
+      if (!ws || boundWebSockets.has(ws)) return
+      boundWebSockets.add(ws)
+      ws.on('packet', onPacket)
+      cleanup.push(() => ws.off('packet', onPacket))
+    }
+
+    const bindNetworking = (networking: unknown) => {
+      const target = networking as StateChangeEmitter | undefined
+      if (!target || boundNetworkings.has(target)) return
+      boundNetworkings.add(target)
+
+      const onNetworkingStateChange = (_oldState: unknown, newState: unknown) => bindWs(newState)
+      target.on('stateChange', onNetworkingStateChange)
+      cleanup.push(() => target.off('stateChange', onNetworkingStateChange))
+      bindWs(target.state)
+    }
+
+    const onConnectionStateChange = (_oldState: unknown, newState: unknown) => {
+      bindNetworking((newState as { networking?: unknown }).networking)
+    }
+
+    state.connection.on('stateChange', onConnectionStateChange)
+    cleanup.push(() => state.connection.off('stateChange', onConnectionStateChange))
+    bindNetworking((state.connection.state as { networking?: unknown }).networking)
+
+    state.voiceGatewayCleanup = () => {
+      for (const dispose of cleanup.splice(0)) dispose()
+    }
   }
 
   private async flushUtterance(state: VoiceState): Promise<void> {
