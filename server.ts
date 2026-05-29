@@ -784,6 +784,19 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       } catch (err) {
         await interaction.editReply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
       }
+    } else if (interaction.commandName === 'clear') {
+      await interaction.deferReply().catch(() => {})
+      const session = readPersonaName()
+      if (!session) {
+        await interaction.editReply('❌ Could not determine session name — check persona.md.').catch(() => {})
+        return
+      }
+      try {
+        execSync(`tmux send-keys -t "${session}" '/clear' Enter`, { timeout: 5000 })
+        await interaction.editReply('✓ Conversation cleared.').catch(() => {})
+      } catch (err) {
+        await interaction.editReply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
+      }
     } else if (interaction.commandName === 'model') {
       const session = readPersonaName()
       if (!session) {
@@ -990,6 +1003,7 @@ client.once('ready', async c => {
   }
   const commands = [
     { name: 'compact', description: 'Compact context' },
+    { name: 'clear', description: 'Clear conversation' },
     { name: 'model', description: 'Switch model', options: [modelOption] },
   ]
   try {
