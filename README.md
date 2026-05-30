@@ -1,10 +1,10 @@
-# artifice-discord
+# claude-discord
 
-Two-way Discord channel for Claude Code. A fork of Anthropic's official `discord` plugin, rebranded to own the full inbound+outbound pipe for the Artifice fleet — and the foundation for live tool-usage streaming (see [PLAN.md](./PLAN.md)).
+Two-way Discord channel for Claude Code. A fork of Anthropic's official `discord` plugin — extended with live tool-usage streaming, preamble forwarding, Stop-hook safety net, voice mode (STT/TTS), and `/model` switching.
 
 When the bot receives a message, the MCP server forwards it to Claude and provides tools to reply, react, edit, fetch history, and download attachments.
 
-> **Fork note:** upstream is `anthropics/claude-plugins-official` (`external_plugins/discord`). This repo gutted the monorepo down to just that plugin and rebranded it: plugin name, MCP server name, and skill namespace are all `artifice-discord`. State still lives under `~/.claude/channels/discord/` so it inherits the existing channel allowlist. Pull upstream fixes by cherry-picking from the `upstream` remote.
+> **Fork note:** upstream is `anthropics/claude-plugins-official` (`external_plugins/discord`). Pull upstream fixes by cherry-picking from the `upstream` remote.
 
 ## Prerequisites
 
@@ -48,7 +48,7 @@ Integration type: **Guild Install**. Copy the **Generated URL**, open it, and ad
 
 **4. Install the plugin.**
 
-This is a local fork, not a marketplace plugin. Point Claude Code at this checkout as a local plugin / marketplace, then `/reload-plugins`. (Exact wiring is finalized at cutover — see [PLAN.md](./PLAN.md) Phase 3.)
+This is a local fork, not a marketplace plugin. Point Claude Code at this checkout as a local plugin / marketplace, then `/reload-plugins`.
 
 > **Do not run this alongside the official `discord` plugin.** Both open a Discord gateway connection; on the same bot token they fight for the same shard and knock each other offline. The cutover is atomic: this plugin on, the official plugin off, same restart.
 
@@ -100,12 +100,11 @@ Quick reference: IDs are Discord **snowflakes** (numeric — enable Developer Mo
 | `fetch_messages` | Pull recent history from a channel (oldest-first). Capped at 100 per call. Each line includes the message ID so the model can `reply_to` it; messages with attachments are marked `+Natt`. Discord's search API isn't exposed to bots, so this is the only lookback. |
 | `download_attachment` | Download all attachments from a specific message by ID to `~/.claude/channels/discord/inbox/`. Returns file paths + metadata. Use when `fetch_messages` shows a message has attachments. |
 
-Inbound messages trigger a typing indicator automatically — Discord shows
-"botname is typing…" while the assistant works on a response.
+Inbound messages trigger a typing indicator automatically — Discord shows "botname is typing…" while the assistant works on a response.
 
 ## Voice mode
 
-Voice mode lets Fernando speak in a Discord voice channel and have the assistant hear (STT) and optionally speak back (TTS).
+Voice mode lets you speak in a Discord voice channel and have the assistant hear (STT) and optionally speak back (TTS).
 
 Configuration:
 
@@ -117,7 +116,7 @@ STT uses OpenAI Whisper (`whisper-1`). TTS uses OpenAI `tts-1`.
 
 Usage:
 
-- Join the voice channel Fernando is currently in: `/voice join`
+- Join the voice channel you're currently in: `/voice join`
 - Leave voice: `/voice leave`
 - Switch voice mode: `/voice mode <full|listen>`
   - `listen` (default) — transcribes speech, replies in text only
@@ -125,18 +124,13 @@ Usage:
 
 Notes:
 
-- The bot does not hardcode a channel ID; it looks up Fernando's current voice channel when `/voice join` runs.
-- Fernando's Discord user ID defaults to `301045022361518081`; override with `DISCORD_VOICE_USER_ID` if needed.
-- The bot buffers Fernando's Discord Opus packets while PTT is active, ignores taps under 300ms, transcribes on PTT release, and auto-leaves after 10 minutes of inactivity.
+- The bot looks up your current voice channel when `/voice join` runs. Set `DISCORD_VOICE_USER_ID` to your Discord user ID so it knows whose channel to join.
+- The bot buffers your Discord Opus packets while PTT is active, ignores taps under 300ms, transcribes on PTT release, and auto-leaves after 10 minutes of inactivity.
 - TTS voice defaults to `onyx`; set `tts_voice:` in `~/.claude/persona.md` to override (valid values: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`).
 - Voice mode resets to the default (`listen`) on each new `/voice join`.
 
 ## Attachments
 
-Attachments are **not** auto-downloaded. The `<channel>` notification lists
-each attachment's name, type, and size — the assistant calls
-`download_attachment(chat_id, message_id)` when it actually wants the file.
-Downloads land in `~/.claude/channels/discord/inbox/`.
+Attachments are **not** auto-downloaded. The `<channel>` notification lists each attachment's name, type, and size — the assistant calls `download_attachment(chat_id, message_id)` when it actually wants the file. Downloads land in `~/.claude/channels/discord/inbox/`.
 
-Same path for attachments on historical messages found via `fetch_messages`
-(messages with attachments are marked `+Natt`).
+Same path for attachments on historical messages found via `fetch_messages` (messages with attachments are marked `+Natt`).
