@@ -16,8 +16,20 @@ const { homedir, tmpdir } = require('os')
 
 const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const tokenFile = join(claudeDir, 'discord-token')
+const personaPath = join(claudeDir, 'persona.md')
 
 const REPLY_TOOL = 'mcp__plugin_artifice-discord_artifice-discord__reply'
+
+function readFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---/)
+  if (!match) return {}
+  const result = {}
+  for (const line of match[1].split('\n')) {
+    const m = line.match(/^(\w+):\s*"?([^"]*)"?\s*$/)
+    if (m) result[m[1]] = m[2].trim()
+  }
+  return result
+}
 
 function textOf(content) {
   if (typeof content === 'string') return content.trim()
@@ -48,6 +60,10 @@ process.stdin.on('end', async () => {
   const channel = tool_input && tool_input.chat_id
   const replyText = (tool_input && tool_input.text) || ''
   if (!channel || !transcript_path || !session_id) process.exit(0)
+
+  let persona = {}
+  try { persona = readFrontmatter(require('fs').readFileSync(personaPath, 'utf8')) } catch {}
+  const personaChannel = persona.discord_channel || ''
 
   // Extract message ID from tool response (array of text blocks or plain string)
   const toolResp = payload.tool_response ?? payload.tool_result ?? ''
@@ -113,15 +129,33 @@ process.stdin.on('end', async () => {
   try { writeFileSync(stateFile, JSON.stringify(state)) } catch {}
 
   const preamble = toForward.map(x => x.text).join('\n\n')
-  const newContent = `${preamble}\n\n---\n\n${replyText}`
-  const editContent = newContent.length > 2000 ? newContent.slice(0, 1997) + '...' : newContent
+
+  const isFernandoChannel = personaChannel && channel === personaChannel
 
   await new Promise(resolve => {
-    const body = JSON.stringify({ content: editContent })
+    let body, path, method
+
+    if (isFernandoChannel) {
+      // Patch reply message to prepend preamble — one message, correct order.
+      const newContent = `${preamble}\n\n---\n\n${replyText}`
+      const editContent = newContent.length > 2000 ? newContent.slice(0, 1997) + '...' : newContent
+      body = JSON.stringify({ content: editContent })
+      path = `/api/v10/channels/${channel}/messages/${messageId}`
+      method = 'PATCH'
+    } else {
+      // Reply went to a fleet/other channel — send preamble as a new message to
+      // Fernando's persona channel so it doesn't silently vanish.
+      const sendContent = preamble.length > 2000 ? preamble.slice(0, 1997) + '...' : preamble
+      if (!personaChannel) { resolve(); return }
+      body = JSON.stringify({ content: sendContent })
+      path = `/api/v10/channels/${personaChannel}/messages`
+      method = 'POST'
+    }
+
     const req = request({
       hostname: 'discord.com',
-      path: `/api/v10/channels/${channel}/messages/${messageId}`,
-      method: 'PATCH',
+      path,
+      method,
       headers: {
         'Authorization': `Bot ${token}`,
         'Content-Type': 'application/json',

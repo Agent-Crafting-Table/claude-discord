@@ -1,13 +1,5 @@
-import { SpeechClient } from '@google-cloud/speech'
 import prism from 'prism-media'
 import { Readable } from 'stream'
-
-let speechClient: SpeechClient | null = null
-
-function getSpeechClient(): SpeechClient {
-  if (!speechClient) speechClient = new SpeechClient()
-  return speechClient
-}
 
 function splitFramedOpusPackets(opusBuffer: Buffer): Buffer[] {
   const packets: Buffer[] = []
@@ -39,65 +31,55 @@ async function decodeOpusToPcm(opusBuffer: Buffer): Promise<Buffer> {
   })
 }
 
-// Best-effort experimental fallback for GOOGLE_API_KEY; ADC/service-account auth is the supported path.
-async function transcribeWithApiKey(pcm: Buffer, apiKey: string): Promise<string> {
-  const res = await fetch(`https://speech.googleapis.com/v1/speech:recognize?key=${encodeURIComponent(apiKey)}`, {
+function pcmToWav(pcm: Buffer, sampleRate = 48000, channels = 2, bitDepth = 16): Buffer {
+  const byteRate = sampleRate * channels * (bitDepth / 8)
+  const blockAlign = channels * (bitDepth / 8)
+  const dataSize = pcm.length
+  const wav = Buffer.allocUnsafe(44 + dataSize)
+
+  wav.write('RIFF', 0)
+  wav.writeUInt32LE(36 + dataSize, 4)
+  wav.write('WAVE', 8)
+  wav.write('fmt ', 12)
+  wav.writeUInt32LE(16, 16)
+  wav.writeUInt16LE(1, 20)
+  wav.writeUInt16LE(channels, 22)
+  wav.writeUInt32LE(sampleRate, 24)
+  wav.writeUInt32LE(byteRate, 28)
+  wav.writeUInt16LE(blockAlign, 32)
+  wav.writeUInt16LE(bitDepth, 34)
+  wav.write('data', 36)
+  wav.writeUInt32LE(dataSize, 40)
+  pcm.copy(wav, 44)
+  return wav
+}
+
+export async function transcribe(opusBuffer: Buffer): Promise<string> {
+  const pcm = await decodeOpusToPcm(opusBuffer)
+  process.stderr.write(`artifice-discord: [voice-debug] PCM decoded: ${pcm.length} bytes\n`)
+  if (pcm.length === 0) return ''
+
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) throw new Error('OPENAI_API_KEY not set')
+
+  const wav = pcmToWav(pcm)
+  const form = new FormData()
+  form.append('file', new Blob([wav], { type: 'audio/wav' }), 'audio.wav')
+  form.append('model', 'whisper-1')
+
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      config: {
-        encoding: 'LINEAR16',
-        sampleRateHertz: 48000,
-        audioChannelCount: 2,
-        languageCode: 'en-US',
-        enableAutomaticPunctuation: true,
-      },
-      audio: { content: pcm.toString('base64') },
-    }),
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
   })
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`Google STT HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`)
+    throw new Error(`Whisper HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`)
   }
 
-  const json = await res.json() as {
-    results?: Array<{ alternatives?: Array<{ transcript?: string; confidence?: number }> }>
-  }
-  return (json.results ?? [])
-    .map(r => r.alternatives?.[0]?.transcript?.trim() ?? '')
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-}
-
-async function transcribeWithCredentials(pcm: Buffer): Promise<string> {
-  const [response] = await getSpeechClient().recognize({
-    config: {
-      encoding: 'LINEAR16',
-      sampleRateHertz: 48000,
-      audioChannelCount: 2,
-      languageCode: 'en-US',
-      enableAutomaticPunctuation: true,
-    },
-    audio: { content: pcm.toString('base64') },
-  })
-
-  return (response.results ?? [])
-    .map(r => r.alternatives?.[0]?.transcript?.trim() ?? '')
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-}
-
-export async function transcribe(opusBuffer: Buffer): Promise<string> {
-  try {
-    const pcm = await decodeOpusToPcm(opusBuffer)
-    if (pcm.length === 0) return ''
-    if (process.env.GOOGLE_API_KEY) return await transcribeWithApiKey(pcm, process.env.GOOGLE_API_KEY)
-    return await transcribeWithCredentials(pcm)
-  } catch (err) {
-    process.stderr.write(`artifice-discord: voice STT failed: ${err instanceof Error ? err.message : String(err)}\n`)
-    return ''
-  }
+  const json = await res.json() as { text?: string }
+  const text = (json.text ?? '').trim()
+  process.stderr.write(`artifice-discord: [voice-debug] Whisper result: "${text || '(empty)'}"\n`)
+  return text
 }

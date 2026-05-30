@@ -1,4 +1,3 @@
-import { TextToSpeechClient } from '@google-cloud/text-to-speech'
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -13,13 +12,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { Readable } from 'stream'
 
-const DEFAULT_VOICE = 'en-US-Neural2-D'
-let ttsClient: TextToSpeechClient | null = null
-
-function getTtsClient(): TextToSpeechClient {
-  if (!ttsClient) ttsClient = new TextToSpeechClient()
-  return ttsClient
-}
+const DEFAULT_VOICE = 'onyx'
 
 export function readTtsVoice(): string {
   try {
@@ -32,43 +25,25 @@ export function readTtsVoice(): string {
   }
 }
 
-// Best-effort experimental fallback for GOOGLE_API_KEY; ADC/service-account auth is the supported path.
-async function synthesizeWithApiKey(text: string, voiceName: string, apiKey: string): Promise<Buffer> {
-  const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(apiKey)}`, {
+export async function synthesize(text: string, voiceName = readTtsVoice()): Promise<Buffer> {
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) throw new Error('OPENAI_API_KEY not set')
+
+  const res = await fetch('https://api.openai.com/v1/audio/speech', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      input: { text },
-      voice: { languageCode: voiceName.split('-').slice(0, 2).join('-'), name: voiceName },
-      audioConfig: { audioEncoding: 'MP3' },
-    }),
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model: 'tts-1', input: text, voice: voiceName }),
   })
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`Google TTS HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`)
+    throw new Error(`OpenAI TTS HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`)
   }
 
-  const json = await res.json() as { audioContent?: string }
-  if (!json.audioContent) throw new Error('Google TTS response did not include audioContent')
-  return Buffer.from(json.audioContent, 'base64')
-}
-
-export async function synthesize(text: string, voiceName = readTtsVoice()): Promise<Buffer> {
-  if (process.env.GOOGLE_API_KEY) {
-    return synthesizeWithApiKey(text, voiceName, process.env.GOOGLE_API_KEY)
-  }
-
-  const [response] = await getTtsClient().synthesizeSpeech({
-    input: { text },
-    voice: { languageCode: voiceName.split('-').slice(0, 2).join('-'), name: voiceName },
-    audioConfig: { audioEncoding: 'MP3' },
-  })
-
-  if (!response.audioContent) throw new Error('Google TTS response did not include audioContent')
-  return Buffer.isBuffer(response.audioContent)
-    ? response.audioContent
-    : Buffer.from(response.audioContent as Uint8Array)
+  return Buffer.from(await res.arrayBuffer())
 }
 
 export async function speak(text: string, connection: VoiceConnection, voiceName = readTtsVoice()): Promise<void> {

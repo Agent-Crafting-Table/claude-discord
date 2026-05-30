@@ -108,7 +108,6 @@ export class VoiceManager {
     this.states.set(guildId, state)
     this.resetInactivityTimer(state)
     this.wireReceiver(state)
-    this.wireVoiceGatewaySpeaking(state)
 
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
@@ -154,34 +153,44 @@ export class VoiceManager {
   private wireReceiver(state: VoiceState): void {
     const receiver = state.connection.receiver
 
-    receiver.speaking.on('start', userId => {
-      if (userId !== this.targetUserId || this.states.get(state.guildId) !== state) return
-      this.resetInactivityTimer(state)
-
-      // receiver.speaking is packet-inactivity based. Use it only to start
-      // packet buffering; the utterance is flushed by the voice gateway
-      // Speaking opcode when Discord reports the user's bitfield dropped to 0.
-      if (state.speaking && state.stream) return
-
-      state.speaking = true
-      state.utteranceStartedAt = Date.now()
-      state.chunks = []
+    const startListening = () => {
+      if (this.states.get(state.guildId) !== state) return
       try { state.stream?.destroy?.() } catch {}
 
-      const stream = receiver.subscribe(userId, {
-        end: { behavior: EndBehaviorType.Manual },
+      // Subscribe proactively rather than waiting for receiver.speaking.on('start').
+      // AfterSilence closes the stream ~400ms after the last packet, which catches
+      // PTT release without needing the voice gateway Speaking opcode.
+      const stream = receiver.subscribe(this.targetUserId, {
+        end: { behavior: EndBehaviorType.AfterSilence, duration: 400 },
       })
       state.stream = stream
+      process.stderr.write(`artifice-discord: [voice-debug] subscribed, waiting for audio\n`)
+
       stream.on('data', (chunk: Buffer) => {
-        if (state.speaking) {
-          this.resetInactivityTimer(state)
-          state.chunks.push(Buffer.from(chunk))
+        if (!state.speaking) {
+          state.speaking = true
+          state.utteranceStartedAt = Date.now()
+          state.chunks = []
+          process.stderr.write(`artifice-discord: [voice-debug] utterance started\n`)
         }
+        this.resetInactivityTimer(state)
+        state.chunks.push(Buffer.from(chunk))
       })
+
+      stream.on('end', () => {
+        process.stderr.write(`artifice-discord: [voice-debug] stream ended, flushing\n`)
+        void this.flushUtterance(state).then(() => {
+          if (this.states.get(state.guildId) === state) startListening()
+        })
+      })
+
       stream.on('error', err => {
-        process.stderr.write(`artifice-discord: voice receive stream failed: ${err instanceof Error ? err.message : String(err)}\n`)
+        process.stderr.write(`artifice-discord: voice receive stream error: ${err instanceof Error ? err.message : String(err)}\n`)
+        if (this.states.get(state.guildId) === state) startListening()
       })
-    })
+    }
+
+    startListening()
   }
 
   private wireVoiceGatewaySpeaking(state: VoiceState): void {
@@ -241,15 +250,30 @@ export class VoiceManager {
     try { state.stream?.destroy?.() } catch {}
     state.stream = undefined
 
-    if (elapsed < MIN_UTTERANCE_MS || chunks.length === 0) return
+    if (elapsed < MIN_UTTERANCE_MS || chunks.length === 0) {
+      process.stderr.write(`artifice-discord: [voice-debug] flush skipped elapsed=${elapsed}ms chunks=${chunks.length}\n`)
+      return
+    }
 
+    process.stderr.write(`artifice-discord: [voice-debug] flushing ${chunks.length} chunks, ${elapsed}ms\n`)
     const framedOpus = Buffer.concat(chunks.flatMap(chunk => {
       const len = Buffer.allocUnsafe(4)
       len.writeUInt32BE(chunk.length, 0)
       return [len, chunk]
     }))
     const text = (await transcribe(framedOpus)).trim()
-    if (!text || this.states.get(state.guildId) !== state) return
+    process.stderr.write(`artifice-discord: [voice-debug] STT result: "${text || '(empty)'}"\n`)
+    if (!text || this.states.get(state.guildId) !== state) {
+      if (!text && this.states.get(state.guildId) === state) {
+        await this.onTranscript({
+          text: '[voice debug] STT returned empty — check Google credentials in tmux pane',
+          chatId: state.textChannelId,
+          guildId: state.guildId,
+          voiceChannelId: state.voiceChannelId,
+        })
+      }
+      return
+    }
 
     await this.onTranscript({
       text,

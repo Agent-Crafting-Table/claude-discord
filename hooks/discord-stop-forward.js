@@ -110,7 +110,9 @@ process.stdin.on('end', async () => {
   let persona = {}
   try { persona = readFrontmatter(readFileSync(personaPath, 'utf8')) } catch {}
   const chatMatch = triggerContent.match(/chat_id="(\d+)"/)
-  const channel = (chatMatch && chatMatch[1]) || persona.discord_channel || ''
+  // Always forward to the persona's configured channel (Fernando's main channel),
+  // not the trigger channel — trigger may be a fleet bot channel (#deet-fleet etc.).
+  const channel = persona.discord_channel || (chatMatch && chatMatch[1]) || ''
   if (!channel) process.exit(0)
 
   let token = ''
